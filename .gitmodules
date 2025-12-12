@@ -1,0 +1,3 @@
+[submodule "pennywise_android"]
+	path = pennywise_android
+	url = git@github.com:iamdpak/pennywise_android.git
