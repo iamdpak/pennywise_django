@@ -26,6 +26,12 @@ requests>=2.32
 # --- Vector search backend ---
 faiss-cpu>=1.8.0
 
+# --- S3 / MinIO client ---
+boto3>=1.35
+
+# --- LLM providers ---
+openai>=1.53.0
+
 # --- Environment variable management (if you use it) ---
 python-decouple>=3.8
 

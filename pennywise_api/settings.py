@@ -124,3 +124,22 @@ AWS_STORAGE_BUCKET_NAME = "receipts"
 AWS_S3_REGION_NAME = "us-east-1"
 AWS_S3_SIGNATURE_VERSION = "s3v4"
 AWS_S3_ADDRESSING_STYLE = "path"
+
+# Where uploaded receipt images are stored when clients send files directly
+RECEIPT_UPLOAD_DIR = os.getenv("RECEIPT_UPLOAD_DIR", str(BASE_DIR / "tmp" / "receipt_uploads"))
+
+# LLM configuration (provider + model selection + optional prompt file)
+LLM_CONFIG = {
+    "provider": os.getenv("LLM_PROVIDER", "ollama"),  # ollama | openai
+    "ollama": {
+        "url": os.getenv("LLM_PROVIDER_URL", "http://ollama:11434"),
+        "model": os.getenv("LLM_MODEL", "llama3.2-vision"),
+    },
+    "openai": {
+        "api_key": os.getenv("OPENAI_API_KEY", ""),
+        "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+    },
+    # Optional external prompt template; supports simple macro replacement using {{MODEL}} and {{PROVIDER}}
+    "prompt_file": os.getenv("LLM_PROMPT_FILE", ""),
+    "timeout": int(os.getenv("LLM_TIMEOUT", "60")),
+}

@@ -12,5 +12,14 @@ class ReceiptSerializer(serializers.ModelSerializer):
     class Meta:
         model = Receipt
         fields = ("id","uuid","total","currency","purchased_at","merchant","category","image_uri","raw_json","items","created_at","updated_at")
+
+
+class ConfirmReceiptSerializer(serializers.Serializer):
+    total = serializers.FloatField(required=False)
+    currency = serializers.CharField(required=False, max_length=8)
+    purchased_at = serializers.DateTimeField(required=False, allow_null=True)
+    merchant = MerchantSerializer(required=False)
+    category = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    items = ReceiptItemSerializer(many=True, required=False)
 class JobSerializer(serializers.ModelSerializer):
     class Meta: model = Job; fields = ("id","idempotency_key","receipt","status","error","started_at","finished_at","created_at")

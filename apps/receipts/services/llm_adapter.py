@@ -8,23 +8,25 @@ from typing import Any, Dict, Iterable
 import base64
 import json
 import logging
-import os
 import re
 import uuid
+from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
+from django.conf import settings
+from openai import OpenAI
 
 
 logger = logging.getLogger(__name__)
 
 
-LLM_PROVIDER_URL = os.getenv("LLM_PROVIDER_URL", "http://ollama:11434")
-LLM_MODEL = os.getenv("LLM_MODEL", "llama3.2-vision")
-LLM_TIMEOUT = int(os.getenv("LLM_TIMEOUT", "60"))
+LLM_CONFIG = settings.LLM_CONFIG
+LLM_PROVIDER = LLM_CONFIG.get("provider", "ollama").lower()
+LLM_TIMEOUT = int(LLM_CONFIG.get("timeout", 60))
 
 
-PROMPT_TEMPLATE = """
+DEFAULT_PROMPT = """
 You are a receipt analysis assistant. Extract the structured information listed
 below from the image. Respond with JSON only, wrapped in triple backticks.
 
@@ -79,11 +81,26 @@ class LLMAdapterError(RuntimeError):
 
 class LLMAdapter:
     def __init__(self) -> None:
-        self._endpoint = f"{LLM_PROVIDER_URL.rstrip('/')}/api/generate"
+        self._provider = LLM_PROVIDER
+        self._use_openai = self._provider == "openai"
+        self._openai_client = None
+        if self._use_openai:
+            cfg = LLM_CONFIG.get("openai", {})
+            api_key = cfg.get("api_key")
+            if not api_key:
+                raise LLMAdapterError("OPENAI_API_KEY not set for LLM_PROVIDER=openai")
+            self._openai_model = cfg.get("model", "gpt-4o-mini")
+            self._openai_client = OpenAI(api_key=api_key)
+        else:
+            cfg = LLM_CONFIG.get("ollama", {})
+            self._ollama_url = cfg.get("url", "http://ollama:11434")
+            self._ollama_model = cfg.get("model", "llama3.2-vision")
+            self._endpoint = f"{self._ollama_url.rstrip('/')}/api/generate"
+        self._prompt = self._load_prompt_template()
 
     def parse_receipt(self, image_uri: str) -> ParseResult:
         image_b64 = self._load_image_as_base64(image_uri)
-        llm_response = self._call_model(PROMPT_TEMPLATE, image_b64)
+        llm_response = self._call_model(self._prompt, image_b64)
         payload = self._extract_json_payload(llm_response)
         normalized = self._normalize_payload(payload)
         return ParseResult(
@@ -112,13 +129,18 @@ class LLMAdapter:
         return base64.b64encode(data).decode("utf-8")
 
     def _call_model(self, prompt: str, image_b64: str) -> str:
+        if self._use_openai:
+            return self._call_openai(prompt, image_b64)
+        return self._call_ollama(prompt, image_b64)
+
+    def _call_ollama(self, prompt: str, image_b64: str) -> str:
         payload = {
-            "model": LLM_MODEL,
+            "model": self._ollama_model,
             "prompt": prompt,
             "images": [image_b64],
             "stream": False,
         }
-        logger.debug("Calling LLM %s at %s", LLM_MODEL, self._endpoint)
+        logger.debug("Calling LLM %s at %s", self._ollama_model, self._endpoint)
         response = requests.post(self._endpoint, json=payload, timeout=LLM_TIMEOUT)
         response.raise_for_status()
         result = response.json()
@@ -126,6 +148,55 @@ class LLMAdapter:
         if not llm_response:
             raise LLMAdapterError("Empty response from LLM provider")
         return llm_response
+
+    def _call_openai(self, prompt: str, image_b64: str) -> str:
+        assert self._openai_client is not None
+        logger.debug("Calling OpenAI model %s", self._openai_model)
+        try:
+            chat = self._openai_client.chat.completions.create(
+                model=self._openai_model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a receipt analysis assistant. Respond with JSON only, wrapped in triple backticks.",
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
+                        ],
+                    },
+                ],
+                max_tokens=2048,
+                temperature=0.2,
+            )
+        except Exception as exc:
+            raise LLMAdapterError(f"OpenAI call failed: {exc}") from exc
+
+        if not chat.choices:
+            raise LLMAdapterError("Empty response from OpenAI")
+        return chat.choices[0].message.content or ""
+
+    def _load_prompt_template(self) -> str:
+        path = LLM_CONFIG.get("prompt_file")
+        if path:
+            p = Path(path)
+            if p.exists():
+                text = p.read_text()
+                return self._apply_macros(text)
+            logger.warning("LLM_PROMPT_FILE set but file not found: %s", path)
+        return self._apply_macros(DEFAULT_PROMPT)
+
+    def _apply_macros(self, prompt: str) -> str:
+        # Simple macro replacement for {{MODEL}} and {{PROVIDER}}
+        values = {
+            "MODEL": self._openai_model if self._use_openai else getattr(self, "_ollama_model", ""),
+            "PROVIDER": "openai" if self._use_openai else "ollama",
+        }
+        for key, val in values.items():
+            prompt = prompt.replace(f"{{{{{key}}}}}", str(val))
+        return prompt
 
     def _extract_json_payload(self, llm_response: str) -> Dict[str, Any]:
         match = re.search(r"```(?:json)?\s*(.*?)\s*```", llm_response, re.DOTALL)
