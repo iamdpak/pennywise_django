@@ -7,17 +7,18 @@ from botocore.client import Config
 from django.conf import settings
 from django.db import transaction
 from django.utils.crypto import get_random_string
-from rest_framework import parsers, status
+from django.urls import reverse
+from rest_framework import parsers, status, viewsets, mixins
+from rest_framework.viewsets import ReadOnlyModelViewSet
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework.viewsets import ReadOnlyModelViewSet
 
 from .models import Job, Receipt, Category, ReceiptItem
 from .serializers import JobSerializer, ReceiptSerializer, ConfirmReceiptSerializer
 from .tasks import process_receipt_job
 
   
-class ReceiptViewSet(ReadOnlyModelViewSet):
+class ReceiptViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.DestroyModelMixin, viewsets.GenericViewSet):
     queryset = Receipt.objects.all().order_by("-created_at")
     serializer_class = ReceiptSerializer
 
@@ -38,6 +39,7 @@ def _enqueue_job(image_uri: str, idem: str):
             if not created:
                 return job, status.HTTP_200_OK
             process_receipt_job.delay(job.id, image_uri)
+            #job.refresh_from_db()  # ensure we return the latest status set inside the task
             return job, status.HTTP_202_ACCEPTED
 
 
@@ -48,7 +50,12 @@ class IngestReceiptView(APIView):
         if not image_uri:
             return Response({"detail":"image_uri required"}, status=status.HTTP_400_BAD_REQUEST)
         job, code = _enqueue_job(image_uri, idem)
-        return Response(JobSerializer(job).data, status=code)
+        payload = {
+            "job_id": job.id,
+            "status": job.status,
+            "poll_url": request.build_absolute_uri(reverse("job-detail", args=[job.id])),
+        }
+        return Response(payload, status=code)
 
 
 class UploadAndIngestView(APIView):
@@ -85,7 +92,23 @@ class UploadAndIngestView(APIView):
             return Response({"detail": f"upload failed: {exc}"}, status=status.HTTP_502_BAD_GATEWAY)
 
         job, code = _enqueue_job(image_uri, idem)
-        return Response(JobSerializer(job).data, status=code)
+        payload = {
+            "job_id": job.id,
+            "status": job.status,
+            "poll_url": request.build_absolute_uri(reverse("job-detail", args=[job.id])),
+        }
+        return Response(payload, status=code)
+
+
+class PendingJobsView(APIView):
+    """
+    Lightweight endpoint to poll pending/running jobs without fetching receipt data.
+    """
+
+    def get(self, request):
+        qs = Job.objects.filter(status__in=[Job.PENDING, Job.RUNNING]).order_by("-created_at")
+        data = [{"id": j.id, "status": j.status, "receipt": j.receipt_id} for j in qs]
+        return Response({"jobs": data}, status=status.HTTP_200_OK)
 
 
 class ConfirmReceiptView(APIView):

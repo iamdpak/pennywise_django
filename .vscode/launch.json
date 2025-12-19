@@ -17,7 +17,8 @@
       "name": "Attach to Django (container)",
       "type": "python",
       "request": "attach",
-      "connect": {"host": "localhost", "port": 5678}
+      "connect": {"host": "localhost", "port": 5678},
+      "justMyCode": false
     }
   ]
 }

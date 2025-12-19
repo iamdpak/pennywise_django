@@ -92,22 +92,22 @@ services:
       - "6379:6379"
 
   # --- Optional Celery worker in dev (uncomment if you use Celery) ---
-  # worker:
-  #   build:
-  #     context: .
-  #     dockerfile: Dockerfile
-  #   container_name: celery-worker-dev
-  #   env_file: [.env]
-  #   environment:
-  #     DJANGO_SETTINGS_MODULE: ${DJANGO_SETTINGS_MODULE:-your_project.settings}
-  #   command: bash -lc "until nc -z db 5432; do sleep 1; done && celery -A your_project.celery:app worker -l info"
-  #   volumes:
-  #     - .:/app:cached
-  #   depends_on:
-  #     db:
-  #       condition: service_healthy
-  #     redis:
-  #       condition: service_started
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: celery-worker-dev
+    env_file: [.env]
+    environment:
+      DJANGO_SETTINGS_MODULE: ${DJANGO_SETTINGS_MODULE:-pennywise_api.settings}
+    command: bash -lc "until nc -z db 5432; do sleep 1; done && celery -A pennywise_api.celery:app worker -l debug"
+    volumes:
+      - .:/app:cached
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
 
   minio:
     image: minio/minio:latest

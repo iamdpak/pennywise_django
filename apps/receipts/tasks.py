@@ -1,9 +1,12 @@
+import logging
+
 from celery import shared_task
 from django.utils import timezone
 from django.db import transaction
 from .models import Job, Receipt, Merchant, Category, ReceiptItem
 from .services.llm_adapter import LLMAdapter
-from .services.embedding import EmbeddingIndex
+
+logger = logging.getLogger(__name__)
 
 @shared_task
 def process_receipt_job(job_id: int, image_uri: str):
@@ -13,6 +16,15 @@ def process_receipt_job(job_id: int, image_uri: str):
     try:
         adapter = LLMAdapter(); 
         result = adapter.parse_receipt(image_uri)
+        logger.info(
+            "Parsed receipt job=%s uuid=%s total=%s currency=%s items=%s",
+            job.id,
+            result.uuid,
+            result.total,
+            result.currency,
+            len(result.items),
+        )
+        logger.debug("Parsed receipt job=%s raw_json=%s", job.id, result.raw_json)
         with transaction.atomic():
             merchant, _ = Merchant.objects.get_or_create(
                 name=result.merchant.get("name","Unknown"),
@@ -31,7 +43,6 @@ def process_receipt_job(job_id: int, image_uri: str):
                     receipt=receipt,line_text=item.get("line_text",""),quantity=item.get("quantity"),
                     unit_price=item.get("unit_price"),amount=item.get("amount"),
                 )
-        EmbeddingIndex().upsert_receipt(receipt.id, [merchant.name])
         job.receipt = receipt; job.status = Job.SUCCEEDED; job.finished_at = timezone.now()
         job.save(update_fields=["receipt","status","finished_at"])
     except Exception as e:

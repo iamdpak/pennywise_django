@@ -1,6 +1,14 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .views import HealthView, IngestReceiptView, UploadAndIngestView, ConfirmReceiptView, ReceiptViewSet, JobViewSet
+from .views import (
+    HealthView,
+    IngestReceiptView,
+    UploadAndIngestView,
+    ConfirmReceiptView,
+    ReceiptViewSet,
+    JobViewSet,
+    PendingJobsView,
+)
 
 router = DefaultRouter()
 router.register(r"receipts", ReceiptViewSet, basename="receipt")
@@ -11,5 +19,6 @@ urlpatterns = [
     path("receipt/ingest", IngestReceiptView.as_view()),
     path("receipt/upload", UploadAndIngestView.as_view()),
     path("receipt/<int:receipt_id>/confirm", ConfirmReceiptView.as_view()),
+    path("jobs/pending", PendingJobsView.as_view(), name="job-pending"),
     path("", include(router.urls)),
 ]
