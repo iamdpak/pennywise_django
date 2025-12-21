@@ -15,50 +15,6 @@ class Category(models.Model):
     def __str__(self): return self.name
 
 
-class ProductFamily(models.Model):
-    """Coarse grouping (e.g., Apples) to aggregate related specific products."""
-
-    name = models.CharField(max_length=255, unique=True)
-    category = models.ForeignKey(Category, null=True, blank=True, on_delete=models.SET_NULL)
-
-    def __str__(self): return self.name
-
-
-class Product(models.Model):
-    """Canonical, comparable item (e.g., Pink Lady apples, 1kg)."""
-
-    family = models.ForeignKey(ProductFamily, null=True, blank=True, on_delete=models.SET_NULL)
-    category = models.ForeignKey(Category, null=True, blank=True, on_delete=models.SET_NULL)
-    canonical_name = models.CharField(max_length=255)
-    brand = models.CharField(max_length=255, blank=True, default="")
-    variety = models.CharField(max_length=255, blank=True, default="")
-    form = models.CharField(max_length=255, blank=True, default="")  # e.g., seedless, split, whole
-    organic = models.BooleanField(default=False)
-    unit_type = models.CharField(max_length=32, blank=True, default="")  # kg, g, each, L
-    pack_size = models.DecimalField(max_digits=10, decimal_places=3, null=True, blank=True)
-    pack_size_unit = models.CharField(max_length=32, blank=True, default="")
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        unique_together = [
-            ("canonical_name", "brand", "variety", "form", "unit_type", "pack_size", "pack_size_unit"),
-        ]
-
-    def __str__(self): return self.canonical_name
-
-
-class ProductEmbedding(models.Model):
-    product = models.ForeignKey(Product, null=True, blank=True, on_delete=models.CASCADE)
-    receipt_item = models.ForeignKey("ReceiptItem", null=True, blank=True, on_delete=models.CASCADE)
-    model_name = models.CharField(max_length=255)
-    vector = ArrayField(models.FloatField(), null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        indexes = [models.Index(fields=["model_name"])]
-
-
 class Receipt(models.Model):
     uuid = models.CharField(max_length=64, unique=True)
     total = models.DecimalField(max_digits=10, decimal_places=2)
@@ -104,13 +60,13 @@ class Purchase(models.Model):
     """Link a parsed receipt line to a canonical product with normalized price for querying."""
 
     receipt_item = models.OneToOneField(ReceiptItem, related_name="purchase", on_delete=models.CASCADE)
-    product = models.ForeignKey(Product, null=True, blank=True, on_delete=models.SET_NULL)
     merchant = models.ForeignKey(Merchant, on_delete=models.PROTECT)
     purchased_at = models.DateTimeField()
     currency = models.CharField(max_length=8, default="AUD")
     price_per_unit = models.DecimalField(max_digits=12, decimal_places=4, null=True, blank=True)
     confidence = models.FloatField(null=True, blank=True)
     cluster = models.ForeignKey("PurchaseCluster", null=True, blank=True, on_delete=models.SET_NULL)
+    normalized_text = models.TextField(blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -118,12 +74,11 @@ class Purchase(models.Model):
         indexes = [
             models.Index(fields=["purchased_at"]),
             models.Index(fields=["merchant"]),
-            models.Index(fields=["product"]),
             models.Index(fields=["cluster"]),
         ]
 
     def __str__(self):
-        return f"Purchase {self.id} for {self.product or 'unlinked'}"
+        return f"Purchase {self.id} at {self.merchant.name}"
 
 
 class PurchaseCluster(models.Model):

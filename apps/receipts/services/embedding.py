@@ -104,3 +104,13 @@ class EmbeddingIndex:
             return np.empty((0,), dtype=np.float32)
 
         return np.vstack(vectors)
+
+
+def embed_texts(texts: List[str]) -> List[List[float]]:
+    """
+    Embed a batch of texts using the configured embedding model.
+    Returns a list of vectors (or empty lists for failed items).
+    """
+    index = EmbeddingIndex()
+    matrix = index._embed(texts)
+    return matrix.tolist() if matrix.size else []

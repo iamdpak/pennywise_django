@@ -8,6 +8,7 @@ from .views import (
     ReceiptViewSet,
     JobViewSet,
     PendingJobsView,
+    PurchaseSearchView,
 )
 
 router = DefaultRouter()
@@ -20,5 +21,6 @@ urlpatterns = [
     path("receipt/upload", UploadAndIngestView.as_view()),
     path("receipt/<int:receipt_id>/confirm", ConfirmReceiptView.as_view()),
     path("jobs/pending", PendingJobsView.as_view(), name="job-pending"),
+    path("purchases/search", PurchaseSearchView.as_view(), name="purchase-search"),
     path("", include(router.urls)),
 ]
