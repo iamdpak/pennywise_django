@@ -1,6 +1,7 @@
 import uuid
 from datetime import datetime
 from pathlib import Path
+from typing import List, Tuple
 
 import boto3
 from botocore.client import Config
@@ -15,7 +16,7 @@ from rest_framework.viewsets import ReadOnlyModelViewSet
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Job, Receipt, Category, ReceiptItem, PurchaseEmbedding
+from .models import Job, Receipt, Category, ReceiptItem, PurchaseEmbedding, Purchase, PurchaseCluster
 from .serializers import JobSerializer, ReceiptSerializer, ConfirmReceiptSerializer
 from .tasks import process_receipt_job
 from .services.embedding import embed_texts
@@ -257,3 +258,76 @@ def _parse_iso(value: str | None):
     if d:
         return datetime.combine(d, datetime.min.time())
     return None
+
+
+class PurchaseClusterJobView(APIView):
+    """
+    Manual trigger to cluster purchases by embedding similarity.
+    POST params (JSON or form):
+      - model: optional embedding model name to filter embeddings
+      - threshold: cosine similarity threshold to join an existing cluster (default 0.85)
+    Creates new PurchaseCluster rows and assigns Purchase.cluster accordingly.
+    """
+
+    def post(self, request):
+        model_name = (request.data.get("model") or "").strip()
+        try:
+            threshold = float(request.data.get("threshold", 0.85))
+        except (TypeError, ValueError):
+            threshold = 0.85
+        threshold = max(0.0, min(threshold, 1.0))
+
+        qs = PurchaseEmbedding.objects.select_related("purchase")
+        if model_name:
+            qs = qs.filter(model_name=model_name)
+
+        embeddings: List[Tuple[np.ndarray, PurchaseEmbedding]] = []
+        for emb in qs.iterator():
+            if not emb.vector:
+                continue
+            vec = np.array(emb.vector, dtype=np.float32)
+            if vec.size == 0:
+                continue
+            norm = np.linalg.norm(vec)
+            if norm == 0:
+                continue
+            embeddings.append((vec / norm, emb))
+
+        if not embeddings:
+            return Response({"clusters_created": 0, "assignments": 0}, status=status.HTTP_200_OK)
+
+        centroids: List[np.ndarray] = []
+        assignments: List[int] = []
+
+        for vec, emb in embeddings:
+            best_idx = -1
+            best_sim = -1.0
+            for idx, centroid in enumerate(centroids):
+                sim = float(np.dot(vec, centroid))
+                if sim > best_sim:
+                    best_sim = sim
+                    best_idx = idx
+            if best_idx >= 0 and best_sim >= threshold:
+                # assign to existing cluster and update centroid (running average)
+                count = assignments.count(best_idx) + 1
+                centroids[best_idx] = (centroids[best_idx] * (count - 1) + vec) / count
+                assignments.append(best_idx)
+            else:
+                centroids.append(vec)
+                assignments.append(len(centroids) - 1)
+
+        cluster_objs: List[PurchaseCluster] = [PurchaseCluster(centroid=centroid.tolist()) for centroid in centroids]
+        PurchaseCluster.objects.bulk_create(cluster_objs)
+        cluster_ids = [c.id for c in cluster_objs]
+
+        updates = 0
+        for (vec, emb), cluster_idx in zip(embeddings, assignments):
+            purchase = emb.purchase
+            purchase.cluster_id = cluster_ids[cluster_idx]
+            purchase.save(update_fields=["cluster"])
+            updates += 1
+
+        return Response(
+            {"clusters_created": len(cluster_objs), "assignments": updates, "threshold": threshold, "model": model_name},
+            status=status.HTTP_200_OK,
+        )
