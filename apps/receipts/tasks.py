@@ -44,10 +44,6 @@ def process_receipt_job(job_id: int, image_uri: str):
                     unit_price=item.get("unit_price"),amount=item.get("amount"),
                     unit_type=item.get("unit_type") or "",
                     pack_size=item.get("pack_size"),
-                    pack_size_unit=item.get("pack_size_unit") or "",
-                    brand=item.get("brand") or "",
-                    variety=item.get("variety") or "",
-                    form=item.get("form") or "",
                 )
         job.receipt = receipt; job.status = Job.SUCCEEDED; job.finished_at = timezone.now()
         job.save(update_fields=["receipt","status","finished_at"])

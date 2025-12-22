@@ -9,14 +9,7 @@ from typing import List, Optional, Sequence
 from django.db import transaction
 from django.utils import timezone
 
-from apps.receipts.models import (
-    Category,
-    Merchant,
-    Purchase,
-    PurchaseEmbedding,
-    Receipt,
-    ReceiptItem,
-)
+from apps.receipts.models import Category, Merchant, Purchase, PurchaseEmbedding, Receipt, ReceiptItem
 from apps.receipts.services.embedding import embed_texts
 
 
@@ -29,12 +22,8 @@ class ParsedItem:
     quantity: float | None
     unit_price: float | None
     amount: float | None
-    brand: str | None = ""
-    variety: str | None = ""
-    form: str | None = ""
     unit_type: str | None = ""
     pack_size: float | None = None
-    pack_size_unit: str | None = ""
     confidence: float | None = None  # optional from parser
 
 
@@ -60,11 +49,8 @@ def normalize_text(item: ParsedItem) -> str:
     parts: List[str] = []
     for value in (
         item.line_text,
-        item.brand,
-        item.variety,
-        item.form,
         item.unit_type,
-        _format_pack_size(item.pack_size, item.pack_size_unit),
+        _format_pack_size(item.pack_size),
     ):
         if value:
             parts.append(str(value).strip().lower())
@@ -72,15 +58,14 @@ def normalize_text(item: ParsedItem) -> str:
     return " ".join(normalized.split())  # collapse whitespace
 
 
-def _format_pack_size(size: float | None, unit: str | None) -> str:
+def _format_pack_size(size: float | None) -> str:
     if size is None:
         return ""
-    unit = (unit or "").strip().lower()
     try:
         size_str = f"{Decimal(str(size)).normalize()}"
     except InvalidOperation:
         size_str = str(size)
-    return f"{size_str}{unit}" if unit else size_str
+    return size_str
 
 
 def _compute_price_per_unit(item: ParsedItem) -> Optional[Decimal]:
@@ -97,8 +82,8 @@ def _compute_price_per_unit(item: ParsedItem) -> Optional[Decimal]:
         "each": Decimal("1"),
     }
 
-    # Pick unit context from explicit unit_type first, then pack size unit.
-    unit = (item.unit_type or "").strip().lower() or (item.pack_size_unit or "").strip().lower()
+    # Pick unit context from explicit unit_type only.
+    unit = (item.unit_type or "").strip().lower()
     multiplier = UNIT_MULTIPLIER.get(unit, None)
 
     # Prefer explicit quantity; fallback to pack_size as quantity hint.
@@ -117,14 +102,22 @@ def _compute_price_per_unit(item: ParsedItem) -> Optional[Decimal]:
             amount = Decimal(str(item.unit_price)) * Decimal(str(qty_val))
         except InvalidOperation:
             amount = None
-    if amount is None and item.unit_price is not None:
+
+    if amount is None:
+        # No amount computed; fall back directly to unit_price if provided (even without quantity)
+        if item.unit_price is not None:
+            try:
+                return Decimal(str(item.unit_price)).quantize(Decimal("0.0001"))
+            except InvalidOperation:
+                return None
+        return None
+
+    if qty_val is None:
+        # No quantity: treat the amount as the unit price (best effort)
         try:
-            return Decimal(str(item.unit_price)).quantize(Decimal("0.0001"))
+            return Decimal(str(amount)).quantize(Decimal("0.0001"))
         except InvalidOperation:
             return None
-
-    if amount is None or qty_val is None:
-        return None
 
     try:
         qty = Decimal(str(qty_val))
@@ -179,12 +172,8 @@ def ingest_parsed_receipt(payload: ParsedReceipt, embedding_model: str | None = 
             quantity=item.quantity,
             unit_price=item.unit_price,
             amount=item.amount,
-            brand=item.brand or "",
-            variety=item.variety or "",
-            form=item.form or "",
             unit_type=item.unit_type or "",
             pack_size=item.pack_size,
-            pack_size_unit=item.pack_size_unit or "",
         )
 
         norm_text = normalize_text(item)
@@ -196,6 +185,8 @@ def ingest_parsed_receipt(payload: ParsedReceipt, embedding_model: str | None = 
             price_per_unit=_compute_price_per_unit(item),
             confidence=item.confidence,
             normalized_text=norm_text,
+            unit_type=item.unit_type or "",
+            pack_size=item.pack_size,
         )
         purchases.append(purchase)
 
@@ -212,3 +203,81 @@ def ingest_parsed_receipt(payload: ParsedReceipt, embedding_model: str | None = 
             )
 
     return receipt
+
+
+@transaction.atomic
+def build_purchases_for_receipt(
+    receipt: Receipt,
+    item_overrides: Optional[List[tuple[ReceiptItem, ParsedItem]]] = None,
+    embedding_model: str | None = None,
+) -> None:
+    """
+    Create or update Purchase/embeddings for an existing receipt and its items.
+    Optional item_overrides: list of (ReceiptItem, ParsedItem) to supply unit_type/pack_size.
+    """
+    if item_overrides is not None:
+        items_with_parsed = item_overrides
+    else:
+        items_with_parsed = []
+        for item in receipt.items.all():
+            parsed = ParsedItem(
+                line_text=item.line_text,
+                quantity=item.quantity,
+                unit_price=float(item.unit_price) if item.unit_price is not None else None,
+                amount=float(item.amount) if item.amount is not None else None,
+                unit_type=item.unit_type,
+                pack_size=float(item.pack_size) if item.pack_size is not None else None,
+                confidence=None,
+            )
+            items_with_parsed.append((item, parsed))
+
+    if not items_with_parsed:
+        if not items:
+            return
+
+    normalized_texts: List[str] = []
+    purchases: List[Purchase] = []
+
+    for item, parsed in items_with_parsed:
+        norm_text = normalize_text(parsed)
+        normalized_texts.append(norm_text)
+
+        purchase, _ = Purchase.objects.get_or_create(
+            receipt_item=item,
+            defaults={
+                "currency": receipt.currency,
+                "price_per_unit": _compute_price_per_unit(parsed),
+                "confidence": None,
+                "normalized_text": norm_text,
+                "unit_type": parsed.unit_type or "",
+                "pack_size": parsed.pack_size,
+            },
+        )
+        updated_price = _compute_price_per_unit(parsed)
+        if (
+            purchase.normalized_text != norm_text
+            or purchase.price_per_unit != updated_price
+            or purchase.unit_type != (parsed.unit_type or "")
+            or purchase.pack_size != parsed.pack_size
+        ):
+            purchase.normalized_text = norm_text
+            purchase.price_per_unit = updated_price
+            purchase.currency = receipt.currency
+            purchase.unit_type = parsed.unit_type or ""
+            purchase.pack_size = parsed.pack_size
+            purchase.save(
+                update_fields=["normalized_text", "price_per_unit", "currency", "unit_type", "pack_size", "updated_at"]
+            )
+        purchases.append(purchase)
+
+    # Refresh embeddings
+    PurchaseEmbedding.objects.filter(purchase__in=purchases).delete()
+    vectors = embed_texts(normalized_texts)
+    for purchase, vector in zip(purchases, vectors):
+        if not vector:
+            continue
+        PurchaseEmbedding.objects.create(
+            purchase=purchase,
+            model_name=embedding_model or "",
+            vector=vector,
+        )

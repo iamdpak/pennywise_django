@@ -20,6 +20,7 @@ from .models import Job, Receipt, Category, ReceiptItem, PurchaseEmbedding, Purc
 from .serializers import JobSerializer, ReceiptSerializer, ConfirmReceiptSerializer
 from .tasks import process_receipt_job
 from .services.embedding import embed_texts
+from .services.purchase_pipeline import ParsedItem, build_purchases_for_receipt
 
   
 class ReceiptViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.DestroyModelMixin, viewsets.GenericViewSet):
@@ -163,18 +164,43 @@ class ConfirmReceiptView(APIView):
                 else:
                     receipt.category = None
 
+            parsed_items: list[tuple[ReceiptItem, ParsedItem]] = []
             if "items" in data:
+                existing_items = list(receipt.items.all().order_by("id"))
                 receipt.items.all().delete()
-                for item in data["items"]:
-                    ReceiptItem.objects.create(
+                for idx, item in enumerate(data["items"]):
+                    fallback_unit_type = existing_items[idx].unit_type if idx < len(existing_items) else ""
+                    fallback_pack_size = existing_items[idx].pack_size if idx < len(existing_items) else None
+                    unit_type_val = item.get("unit_type")
+                    pack_size_val = item.get("pack_size")
+
+                    ri = ReceiptItem.objects.create(
                         receipt=receipt,
                         line_text=item.get("line_text", ""),
                         quantity=item.get("quantity"),
                         unit_price=item.get("unit_price"),
                         amount=item.get("amount"),
+                        unit_type=(unit_type_val if unit_type_val not in (None, "") else fallback_unit_type or ""),
+                        pack_size=pack_size_val if pack_size_val not in (None, "") else fallback_pack_size,
+                    )
+                    parsed_items.append(
+                        (
+                            ri,
+                            ParsedItem(
+                                line_text=ri.line_text,
+                                quantity=ri.quantity,
+                                unit_price=float(ri.unit_price) if ri.unit_price is not None else None,
+                                amount=float(ri.amount) if ri.amount is not None else None,
+                                unit_type=(unit_type_val if unit_type_val not in (None, "") else fallback_unit_type or ""),
+                                pack_size=pack_size_val if pack_size_val not in (None, "") else fallback_pack_size,
+                            ),
+                        )
                     )
 
             receipt.save()
+
+            # Build purchases and embeddings for this receipt
+            build_purchases_for_receipt(receipt, item_overrides=parsed_items or None)
 
         return Response(ReceiptSerializer(receipt).data, status=status.HTTP_200_OK)
 

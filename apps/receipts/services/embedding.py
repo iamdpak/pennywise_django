@@ -3,21 +3,40 @@ from __future__ import annotations
 from typing import Iterable, List, Tuple
 
 import logging
-import os
 import threading
 
 import faiss
 import numpy as np
+import os
 import requests
+from django.conf import settings
+from openai import OpenAI
 
 
 logger = logging.getLogger(__name__)
 
 
-LLM_PROVIDER_URL = os.getenv("LLM_PROVIDER_URL", "http://ollama:11434")
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", os.getenv("LLM_MODEL", "llama3.2-vision"))
-LLM_TIMEOUT = int(os.getenv("LLM_TIMEOUT", "60"))
-EMBEDDING_ENDPOINT = f"{LLM_PROVIDER_URL.rstrip('/')}/api/embeddings"
+LLM_CONFIG = settings.LLM_CONFIG
+LLM_PROVIDER = LLM_CONFIG.get("provider", "ollama").lower()
+OLLAMA_CFG = LLM_CONFIG.get("ollama", {})
+OPENAI_CFG = LLM_CONFIG.get("openai", {})
+LLM_TIMEOUT = int(LLM_CONFIG.get("timeout", 60))
+
+# Choose embedding model: prefer explicit EMBEDDING_MODEL env, fallback to provider model.
+# Select embedding model: prefer explicit env; else provider-specific embedding default.
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL")
+if not EMBEDDING_MODEL:
+    if LLM_PROVIDER == "openai":
+        # Do not fall back to a chat/completions model; use an embedding model.
+        EMBEDDING_MODEL = OPENAI_CFG.get("embedding_model") or "text-embedding-3-small"
+    else:
+        EMBEDDING_MODEL = OLLAMA_CFG.get("model") or "llama3.2-vision"
+
+_openai_client = None
+if LLM_PROVIDER == "openai":
+    api_key = OPENAI_CFG.get("api_key")
+    if api_key:
+        _openai_client = OpenAI(api_key=api_key)
 
 
 class EmbeddingIndex:
@@ -84,26 +103,9 @@ class EmbeddingIndex:
         return results
 
     def _embed(self, texts: List[str]) -> np.ndarray:
-        vectors = []
-        for text in texts:
-            payload = {"model": EMBEDDING_MODEL, "prompt": text}
-            try:
-                response = requests.post(EMBEDDING_ENDPOINT, json=payload, timeout=LLM_TIMEOUT)
-                response.raise_for_status()
-                embedding = response.json().get("embedding")
-            except requests.RequestException as exc:
-                logger.error("EmbeddingIndex: embedding request failed: %s", exc)
-                continue
-
-            if not embedding:
-                logger.warning("EmbeddingIndex: empty embedding for text %r", text)
-                continue
-            vectors.append(np.array(embedding, dtype=np.float32))
-
-        if not vectors:
-            return np.empty((0,), dtype=np.float32)
-
-        return np.vstack(vectors)
+        if LLM_PROVIDER == "openai":
+            return _embed_openai(texts)
+        return _embed_ollama(texts)
 
 
 def embed_texts(texts: List[str]) -> List[List[float]]:
@@ -114,3 +116,48 @@ def embed_texts(texts: List[str]) -> List[List[float]]:
     index = EmbeddingIndex()
     matrix = index._embed(texts)
     return matrix.tolist() if matrix.size else []
+
+
+def _embed_ollama(texts: List[str]) -> np.ndarray:
+    vectors = []
+    endpoint = f"{OLLAMA_CFG.get('url', 'http://ollama:11434').rstrip('/')}/api/embeddings"
+    for text in texts:
+        payload = {"model": EMBEDDING_MODEL, "prompt": text}
+        try:
+            response = requests.post(endpoint, json=payload, timeout=LLM_TIMEOUT)
+            response.raise_for_status()
+            embedding = response.json().get("embedding")
+        except requests.RequestException as exc:
+            logger.error("EmbeddingIndex: embedding request failed: %s", exc)
+            continue
+
+        if not embedding:
+            logger.warning("EmbeddingIndex: empty embedding for text %r", text)
+            continue
+        vectors.append(np.array(embedding, dtype=np.float32))
+
+    if not vectors:
+        return np.empty((0,), dtype=np.float32)
+    return np.vstack(vectors)
+
+
+def _embed_openai(texts: List[str]) -> np.ndarray:
+    if _openai_client is None:
+        logger.error("EmbeddingIndex: OpenAI client not configured; set OPENAI_API_KEY")
+        return np.empty((0,), dtype=np.float32)
+    try:
+        resp = _openai_client.embeddings.create(model=EMBEDDING_MODEL, input=texts)
+        data = resp.data
+    except Exception as exc:
+        logger.error("EmbeddingIndex: OpenAI embedding request failed: %s", exc)
+        return np.empty((0,), dtype=np.float32)
+
+    vectors = []
+    for item in data:
+        vec = getattr(item, "embedding", None)
+        if not vec:
+            continue
+        vectors.append(np.array(vec, dtype=np.float32))
+    if not vectors:
+        return np.empty((0,), dtype=np.float32)
+    return np.vstack(vectors)

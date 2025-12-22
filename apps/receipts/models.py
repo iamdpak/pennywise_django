@@ -34,14 +34,8 @@ class ReceiptItem(models.Model):
     quantity = models.FloatField(null=True, blank=True)
     unit_price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
-
-    # Parsed attributes to assist association; optional and can be backfilled later.
-    brand = models.CharField(max_length=255, blank=True, default="")
-    variety = models.CharField(max_length=255, blank=True, default="")
-    form = models.CharField(max_length=255, blank=True, default="")
-    unit_type = models.CharField(max_length=32, blank=True, default="")
+    unit_type = models.CharField(max_length=32, null=True, blank=True, default="")
     pack_size = models.DecimalField(max_digits=10, decimal_places=3, null=True, blank=True)
-    pack_size_unit = models.CharField(max_length=32, blank=True, default="")
 
 
 class Job(models.Model):
@@ -65,6 +59,8 @@ class Purchase(models.Model):
     confidence = models.FloatField(null=True, blank=True)
     cluster = models.ForeignKey("PurchaseCluster", null=True, blank=True, on_delete=models.SET_NULL)
     normalized_text = models.TextField(blank=True, default="")
+    unit_type = models.CharField(max_length=32, blank=True, default="")
+    pack_size = models.DecimalField(max_digits=10, decimal_places=3, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
