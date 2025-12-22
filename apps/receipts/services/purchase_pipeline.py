@@ -85,22 +85,57 @@ def _format_pack_size(size: float | None, unit: str | None) -> str:
 
 def _compute_price_per_unit(item: ParsedItem) -> Optional[Decimal]:
     """
-    Compute normalized unit price when quantity is known; falls back to unit_price.
+    Compute normalized price per base unit.
+    - Weight/volume: normalize g->kg, ml->L.
+    - Each/unknown: return price per quantity as-is.
     """
-    if item.quantity:
+    UNIT_MULTIPLIER = {
+        "kg": Decimal("1"),
+        "g": Decimal("0.001"),
+        "l": Decimal("1"),
+        "ml": Decimal("0.001"),
+        "each": Decimal("1"),
+    }
+
+    # Pick unit context from explicit unit_type first, then pack size unit.
+    unit = (item.unit_type or "").strip().lower() or (item.pack_size_unit or "").strip().lower()
+    multiplier = UNIT_MULTIPLIER.get(unit, None)
+
+    # Prefer explicit quantity; fallback to pack_size as quantity hint.
+    qty_val = item.quantity
+    if qty_val is None and item.pack_size is not None:
+        qty_val = item.pack_size
+
+    amount = None
+    if item.amount is not None:
         try:
-            amount = Decimal(str(item.amount)) if item.amount is not None else Decimal(str(item.unit_price or 0))
-            qty = Decimal(str(item.quantity))
-            if qty > 0:
-                return (amount / qty).quantize(Decimal("0.0001"))
-        except (InvalidOperation, ZeroDivisionError):
-            return None
-    if item.unit_price is not None:
+            amount = Decimal(str(item.amount))
+        except InvalidOperation:
+            amount = None
+    if amount is None and item.unit_price is not None and qty_val is not None:
+        try:
+            amount = Decimal(str(item.unit_price)) * Decimal(str(qty_val))
+        except InvalidOperation:
+            amount = None
+    if amount is None and item.unit_price is not None:
         try:
             return Decimal(str(item.unit_price)).quantize(Decimal("0.0001"))
         except InvalidOperation:
             return None
-    return None
+
+    if amount is None or qty_val is None:
+        return None
+
+    try:
+        qty = Decimal(str(qty_val))
+        if qty <= 0:
+            return None
+        base_qty = qty * (multiplier if multiplier is not None else Decimal("1"))
+        if base_qty <= 0:
+            return None
+        return (amount / base_qty).quantize(Decimal("0.0001"))
+    except (InvalidOperation, ZeroDivisionError):
+        return None
 
 
 @transaction.atomic
@@ -157,8 +192,6 @@ def ingest_parsed_receipt(payload: ParsedReceipt, embedding_model: str | None = 
 
         purchase = Purchase.objects.create(
             receipt_item=ri,
-            merchant=merchant,
-            purchased_at=payload.purchased_at or timezone.now(),
             currency=payload.currency,
             price_per_unit=_compute_price_per_unit(item),
             confidence=item.confidence,

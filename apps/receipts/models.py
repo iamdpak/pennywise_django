@@ -60,8 +60,6 @@ class Purchase(models.Model):
     """Link a parsed receipt line to a canonical product with normalized price for querying."""
 
     receipt_item = models.OneToOneField(ReceiptItem, related_name="purchase", on_delete=models.CASCADE)
-    merchant = models.ForeignKey(Merchant, on_delete=models.PROTECT)
-    purchased_at = models.DateTimeField()
     currency = models.CharField(max_length=8, default="AUD")
     price_per_unit = models.DecimalField(max_digits=12, decimal_places=4, null=True, blank=True)
     confidence = models.FloatField(null=True, blank=True)
@@ -72,13 +70,11 @@ class Purchase(models.Model):
 
     class Meta:
         indexes = [
-            models.Index(fields=["purchased_at"]),
-            models.Index(fields=["merchant"]),
             models.Index(fields=["cluster"]),
         ]
 
     def __str__(self):
-        return f"Purchase {self.id} at {self.merchant.name}"
+        return f"Purchase {self.id}"
 
 
 class PurchaseCluster(models.Model):

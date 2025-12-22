@@ -46,8 +46,14 @@ Schema:
     {
       "line_text": string,
       "quantity": number or null,
+      "unit_type": string or null,           // kg, g, each, l, ml
+      "pack_size": number or null,           // package size magnitude
+      "pack_size_unit": string or null,      // g, kg, ml, l, each
       "unit_price": number or null,
-      "amount": number or null
+      "amount": number or null,
+      "brand": string or null,
+      "variety": string or null,             // e.g., pink lady, granny smith
+      "form": string or null                 // e.g., seedless, split, whole
     }
   ]
 }
@@ -55,6 +61,7 @@ Schema:
 Rules:
 - Always include all fields even if values are null.
 - Use plain numbers for monetary fields (no currency symbols).
+- Normalize unit types to a small set: kg, g, l, ml, each.
 - When the receipt total is missing, approximate from the items.
 - Choose the best matching category among: grocery, fuel, food. If none apply,
   produce a descriptive alternative.
@@ -254,14 +261,31 @@ class LLMAdapter:
             return normalized
         for item in items:
             if isinstance(item, str):
-                normalized.append({"line_text": item, "quantity": None, "unit_price": None, "amount": None})
+                normalized.append({
+                    "line_text": item,
+                    "quantity": None,
+                    "unit_type": "",
+                    "pack_size": None,
+                    "pack_size_unit": "",
+                    "unit_price": None,
+                    "amount": None,
+                    "brand": "",
+                    "variety": "",
+                    "form": "",
+                })
                 continue
             if isinstance(item, dict):
                 normalized.append({
                     "line_text": item.get("line_text") or item.get("description") or item.get("name") or "",
                     "quantity": self._to_float(item.get("quantity")) if item.get("quantity") not in (None, "") else None,
+                    "unit_type": (item.get("unit_type") or "").strip().lower(),
+                    "pack_size": self._to_float(item.get("pack_size")) if item.get("pack_size") not in (None, "") else None,
+                    "pack_size_unit": (item.get("pack_size_unit") or "").strip().lower(),
                     "unit_price": self._to_float(item.get("unit_price")) if item.get("unit_price") not in (None, "") else None,
                     "amount": self._to_float(item.get("amount")) if item.get("amount") not in (None, "") else None,
+                    "brand": item.get("brand") or "",
+                    "variety": item.get("variety") or "",
+                    "form": item.get("form") or "",
                 })
         return normalized
 

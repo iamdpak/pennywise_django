@@ -34,8 +34,12 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
-    # Run the dev server under debugpy so VS Code can attach
-    command: ["python", "-m", "debugpy", "--listen", "0.0.0.0:5678", "manage.py", "runserver", "0.0.0.0:8000"]
+    # Run migrations then the dev server under debugpy so VS Code can attach
+    command: >
+      /bin/sh -c "
+      python manage.py migrate &&
+      python -m debugpy --listen 0.0.0.0:5678 manage.py runserver 0.0.0.0:8000
+      "
 
   cli:
     build:
@@ -108,6 +112,31 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      DJANGO_SETTINGS_MODULE: ${DJANGO_SETTINGS_MODULE:-pennywise_api.settings}
+      DEBUG: ${DEBUG:-1}
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB:-postgres}
+      DB_USER: ${POSTGRES_USER:-postgres}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
+      SECRET_KEY: dev-secret-change-me
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    command: ["python", "manage.py", "migrate"]
+    profiles: ["migrate"]
 
   minio:
     image: minio/minio:latest

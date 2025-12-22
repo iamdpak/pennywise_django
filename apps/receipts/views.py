@@ -66,10 +66,9 @@ class UploadAndIngestView(APIView):
     parser_classes = [parsers.MultiPartParser, parsers.FormParser]
 
     def post(self, request):
-        image_file = request.FILES.get("image")
-        idem = request.headers.get("Idempotency-Key") or get_random_string(24)
-        if not image_file:
-            return Response({"detail": "image file required"}, status=status.HTTP_400_BAD_REQUEST)
+        files = request.FILES.getlist("images") or ([request.FILES.get("image")] if request.FILES.get("image") else [])
+        if not files:
+            return Response({"detail": "image file(s) required"}, status=status.HTTP_400_BAD_REQUEST)
 
         s3 = boto3.client(
             "s3",
@@ -80,28 +79,38 @@ class UploadAndIngestView(APIView):
             config=Config(signature_version=settings.AWS_S3_SIGNATURE_VERSION),
         )
 
-        ext = Path(image_file.name).suffix or ".jpg"
+        results = []
         prefix = datetime.utcnow().strftime("%Y/%m/%d")
-        key = f"{prefix}/{uuid.uuid4()}{ext}"
-        extra = {"ContentType": image_file.content_type or "application/octet-stream"}
 
-        try:
-            s3.upload_fileobj(image_file.file, settings.AWS_STORAGE_BUCKET_NAME, key, ExtraArgs=extra)
-            image_uri = s3.generate_presigned_url(
-                "get_object",
-                Params={"Bucket": settings.AWS_STORAGE_BUCKET_NAME, "Key": key},
-                ExpiresIn=3600,
+        for image_file in files:
+            idem = request.headers.get("Idempotency-Key") or get_random_string(24)
+            ext = Path(image_file.name).suffix or ".jpg"
+            key = f"{prefix}/{uuid.uuid4()}{ext}"
+            extra = {"ContentType": image_file.content_type or "application/octet-stream"}
+
+            try:
+                s3.upload_fileobj(image_file.file, settings.AWS_STORAGE_BUCKET_NAME, key, ExtraArgs=extra)
+                image_uri = s3.generate_presigned_url(
+                    "get_object",
+                    Params={"Bucket": settings.AWS_STORAGE_BUCKET_NAME, "Key": key},
+                    ExpiresIn=3600,
+                )
+            except Exception as exc:
+                results.append({"filename": image_file.name, "error": str(exc)})
+                continue
+
+            job, code = _enqueue_job(image_uri, idem)
+            results.append(
+                {
+                    "filename": image_file.name,
+                    "job_id": job.id,
+                    "status": job.status,
+                    "poll_url": request.build_absolute_uri(reverse("job-detail", args=[job.id])),
+                    "status_code": code,
+                }
             )
-        except Exception as exc:
-            return Response({"detail": f"upload failed: {exc}"}, status=status.HTTP_502_BAD_GATEWAY)
 
-        job, code = _enqueue_job(image_uri, idem)
-        payload = {
-            "job_id": job.id,
-            "status": job.status,
-            "poll_url": request.build_absolute_uri(reverse("job-detail", args=[job.id])),
-        }
-        return Response(payload, status=code)
+        return Response({"results": results}, status=status.HTTP_207_MULTI_STATUS)
 
 
 class PendingJobsView(APIView):
@@ -205,17 +214,17 @@ class PurchaseSearchView(APIView):
         q_norm = np.linalg.norm(query_vec) or 1.0
 
         qs = PurchaseEmbedding.objects.select_related(
-            "purchase__merchant",
             "purchase__receipt_item",
             "purchase__receipt_item__receipt",
+            "purchase__receipt_item__receipt__merchant",
             "purchase__cluster",
         )
         if start_dt:
-            qs = qs.filter(purchase__purchased_at__gte=start_dt)
+            qs = qs.filter(purchase__receipt_item__receipt__purchased_at__gte=start_dt)
         if end_dt:
-            qs = qs.filter(purchase__purchased_at__lte=end_dt)
+            qs = qs.filter(purchase__receipt_item__receipt__purchased_at__lte=end_dt)
         if vendor:
-            qs = qs.filter(purchase__merchant__name__iexact=vendor)
+            qs = qs.filter(purchase__receipt_item__receipt__merchant__name__iexact=vendor)
 
         results = []
         for emb in qs.iterator():
@@ -234,8 +243,8 @@ class PurchaseSearchView(APIView):
                 "purchase_id": purchase.id,
                 "receipt_id": purchase.receipt_item.receipt_id,
                 "receipt_item_id": purchase.receipt_item_id,
-                "merchant": purchase.merchant.name,
-                "purchased_at": purchase.purchased_at,
+                "merchant": purchase.receipt_item.receipt.merchant.name if purchase.receipt_item and purchase.receipt_item.receipt else None,
+                "purchased_at": purchase.receipt_item.receipt.purchased_at if purchase.receipt_item and purchase.receipt_item.receipt else None,
                 "price_per_unit": purchase.price_per_unit,
                 "currency": purchase.currency,
                 "cluster_id": purchase.cluster_id,
