@@ -81,9 +81,10 @@ class UploadAndIngestView(APIView):
 
         results = []
         prefix = datetime.utcnow().strftime("%Y/%m/%d")
+        base_idem = (request.headers.get("Idempotency-Key") or "").strip()
 
-        for image_file in files:
-            idem = request.headers.get("Idempotency-Key") or get_random_string(24)
+        for idx, image_file in enumerate(files):
+            idem = f"{base_idem}-{idx}-{uuid.uuid4()}" if base_idem else get_random_string(24)
             ext = Path(image_file.name).suffix or ".jpg"
             key = f"{prefix}/{uuid.uuid4()}{ext}"
             extra = {"ContentType": image_file.content_type or "application/octet-stream"}
