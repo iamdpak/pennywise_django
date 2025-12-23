@@ -58,6 +58,7 @@ Rules:
 - Always include all fields even if values are null.
 - Use plain numbers for monetary fields (no currency symbols).
 - Normalize unit_type to this exact set: kg, g, l, ml, each, pack.
+- If a single item is split across multiple printed lines (e.g., description on one line and quantity/price on the next), merge them into one item.
 - When the receipt total is missing, approximate from the items.
 - Choose the best matching category among: grocery, fuel, food. If none apply,
   produce a descriptive alternative.
